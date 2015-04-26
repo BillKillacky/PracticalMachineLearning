@@ -1,0 +1,239 @@
+---
+title: "Exercise Activity Quality Prediction"
+author: "Bill Killacky"
+date: "Saturday, April 25, 2015"
+output: html_document
+---
+
+###Synopsis
+In this report my goal is to predict the **quality** of a particular exercise: a biceps curl.  
+The data being used ultimately comes from a human activity study (*Qualitative activity recognition of weight lifting exercises*, 2013).  
+
+This report will detail the steps I took to do this prediction. Specifically I'll detail how I built my predictive model, explain how cross-validation was used, discuss expected out of sample errors, and explain why I made my choices for this analysis.   
+
+For another assignment (the Prediction Assignment Submission) we will use the prediction model developed in this report with a new dataset named pml-testing.csv.  Of course this new dataset will not have the classe column.  It will be our prediction model's job to identify the proper classe (exercise quality category A to E) to predict 20 test cases.    
+
+####Exercise Quality Classification:  
+If the biceps curl exercise was done **correctly** it was categorized with an "A".  
+
+* "B" If the elbows were thrown out to the front.  
+* "C" If the dumbell was lifted only halfway.  
+* "D" If the dumbell was lowered only halfway.  
+* "E" If the hips were thrown out to the front.  
+
+
+```{r init, echo=FALSE}
+    setwd("~/Coursera/PracticalMachineLearning")    
+    w <- getwd()
+```
+
+```{r DownloadTrainingDataFromWeb, echo=FALSE}
+    #
+    # Training Dataset Download from Web
+    #
+    
+    wtrain <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+    ftrain <- "pml-training.csv"
+
+    if (!file.exists(ftrain)) {
+        print(paste('Input file:',ftrain, 'not in working directory.'))
+        print('Attempting to Download our file from the website now.')
+
+        download.file(url=wtrain, destfile=ftrain)
+    }
+```
+
+```{r ReadFileForTraining, echo=FALSE, message=FALSE}
+
+    # Warn if input file is still not in working directory    
+    #
+    if (!file.exists(ftrain)) {
+        print(paste('Problem: Input file', ftrain, 'is not in working directory:', w))
+    } 
+    
+    trn <- read.csv(file=ftrain, stringsAsFactors=FALSE, na.strings=c('NA', "#DIV/0!", ''))
+    # paste(nrow(trn), 'rows were read from', ftrain)
+
+    rm(wtrain, w, ftrain)
+```
+
+
+###How The Model Was Built  
+The data for this assignment came in the form of a comma-separated-value (pml-training.csv) training file with 19,622 rows and 160 columns.  One of the columns contains the 'classe' variable we want to learn to predict.  
+The prediction study design partitioned the input file into:  
+
+* 60% into the training set   (11,776 rows)
+* 20% into the test set       ( 3,923 rows)
+* 20% into the validation set ( 3,923 rows)
+    
+
+```{r partitionTrainingData, echo=FALSE, message=FALSE}
+    set.seed(42415)
+    #
+    # 1. partition the data
+    #
+    library(caret)
+    inTrain <- createDataPartition(y=trn$classe, p=0.60, list=FALSE)
+    training <- trn[inTrain,]
+    testval <- trn[-inTrain,]
+    inTrain <- createDataPartition(y=testval$classe, p=0.50, list=FALSE)
+    testing <- testval[inTrain,]
+    validating <- testval[-inTrain,]
+    rm(inTrain, testval, trn)
+    
+    training$classe <- as.factor(training$classe)
+    testing$classe <- as.factor(testing$classe)
+    validating$classe <- as.factor(validating$classe)
+    
+    tyN <- training
+
+```
+
+
+####Variable Selection - Preprocessing of the training partition  
+* The classe variable was converted to a factor variable for each partition set.
+* Data columns only having to do with num_window summaries were removed from the training dataset. These included variables beginning with kurtosis, max, min, amplitude, avg, stddev, var, and skewness.  
+* I also removed rowname, user_name, timestamps, and the new_window variables.
+* Training rows with the remaining variables having missing values were excluded.
+* Finally all remaining training variables were converted to numeric with the exception of classe.  
+* As a result I was left with columns including num_window, classe, and the non-summary measures.
+* Finally I identified the high correlation variables and removed them since they would add nothing to the prediction process.  
+  
+  
+```{r preProcessTrainingData, echo=FALSE, message=FALSE}
+    # ---------------------------------------------------
+    # use column names summarizing window group measures
+    # ---------------------------------------------------
+    library(sqldf)
+    library(caret)
+    x <- data.frame(colnames(tyN), stringsAsFactors=FALSE)
+    colnames(x)[1] = 'colName'
+    f2 <- sqldf("select colName from x where colName like 'kurtosis_%'  ")
+    f3 <- sqldf("select colName from x where colName like 'max_%' ")
+    f4 <- sqldf("select colName from x where colName like 'min_%' ")
+    f5 <- sqldf("select colName from x where colName like 'amplitude_%' ")
+    f6 <- sqldf("select colName from x where colName like 'avg_%' ")
+    f7 <- sqldf("select colName from x where colName like 'stddev_%' ")
+    f8 <- sqldf("select colName from x where colName like 'var_%' ")
+    f9 <- sqldf("select colName from x where colName like 'skewness_%'  ")
+    x2 <- rbind(f2, f3, f4, f5, f6, f7, f8, f9)
+    rm(f2, f3, f4, f5, f6, f7, f8, f9)
+    
+    # get rid of the columns in x2
+    #
+    trnN <- training[, -(which(colnames(training) %in% x2$colName))]
+    rm(x, x2)
+    rm(tyN)
+    # ---------------------------------------------------
+    
+    # eliminate the first 6 columns for the study
+    # training[1:5,1:6]
+    training <- trnN[,-(c(1:6))]
+    
+    # training[1:5,1:5]
+    # training[1:5,50:54]
+    
+    training <- training[complete.cases(training),]     # get rid of rows with missing values
+    
+    # names(training)[54]    # classe
+    # convert all variables but classe to numeric
+    #
+    for (c in 1:53) {
+      training[,c] <- as.numeric(training[,c])
+    }
+    rm(c)
+
+    
+    # remove high correlation columns
+    #
+    # names(training)[54]   # classe
+    #
+    trainCor <- cor(training[,-54])
+    highCor <- findCorrelation(trainCor, 0.90)
+    # names(training)[highCor]
+    trainingNH <- training[,-highCor]   #NH meaning No High correlation columns
+    
+    rm(highCor)
+    rm(training)
+    rm(trainCor)
+    rm(trnN)
+
+```
+
+ 
+
+```{r randomForest, echo=FALSE, message=FALSE}
+  library(randomForest)
+  set.seed(42415)
+  RandomForestFit <- randomForest(classe ~ ., 
+                         data=trainingNH)
+```
+
+###Use of Cross Validation  
+  
+* Several types of prediction functions were considered, and cross validation allowed an accuracy comparison.  
+    + The **Random Forest model was best** with 3912 and 3912 correct out of 3923.
+    + The generalized Boosted Regression Model had 3844 and 3877 correct out of 3923.  
+      
+* After selecting Random Forest as the best predictive model for the training set, cross validation approach taken:   
+    + As mentioned above, the training set was split into **training**, **testing**, and **validating** sets.
+    + A predictive model was built using the **training** set.
+    + The predictive model was evaluated on the **testing** and the **validating** sets.
+    + The average **expected error** of the testing and validating set predictions was calculated as a final output of this cross-validation.
+
+
+```{r rfCrossValidation, echo=FALSE, message=FALSE}
+  set.seed(42415)
+  predictedTesting <- predict(RandomForestFit, newdata=testing)
+  table(testing$classe, predictedTesting)
+  CorrectTesting <- sum(testing$classe==predictedTesting)
+  CorrectTestPct <- CorrectTesting / length(predictedTesting)
+  paste('Prediction on testing dataset is Correct',sum(testing$classe==predictedTesting), 
+        'out of', length(predictedTesting), 'Accuracy:', 
+        round(sum(testing$classe==predictedTesting) / length(predictedTesting),4)*100, "%")
+  
+  predictedValidating <- predict(RandomForestFit, newdata=validating)
+  table(testing$classe, predictedValidating)
+  CorrectValidating <- sum(validating$classe==predictedValidating)
+  CorrectValidPct <- CorrectValidating / length(predictedValidating)
+  paste('Prediction on validating dataset is Correct',sum(testing$classe==predictedValidating), 
+        'out of', length(predictedValidating), 'Accuracy:', 
+        round(sum(validating$classe==predictedValidating) / length(predictedValidating),4)*100, "%")
+
+```
+
+  
+###Expected Out Of Sample Error   
+The Random Forest model we created from the training set and it's Expected Errors on Independent Data (testing, and validating sets):  
+
+* After building our model using the training set, two other independent sets were used to calculate the out of sample error.
+* The testing set had 11 errors per 3923 or 0.28% Expected Error.
+* The validating set had 11 errors per 3923 or 0.28% Expected Error.
+* Our Average **Expected Out of Sample Error is therefore 0.28%**.
+* Note that while the error rate is the same for the testing and validating sets, the individual predictions differ slightly.  (refer to the previous two tables)
+
+###Why I Made My Choices  
+
+* We needed to predict if a row of data was best categorized as an A, B, C, D, or E.  In other words, we needed a statistical learning method for classification.
+* I removed window summary columns that had lots of missing data that could hurt our results.
+* I removed columns that had a high correlation to other columns and were therefore not helpful for prediction.
+* I chose a study design that provided 60% of the data for creating a prediction model, while allowing for two other datasets to test and validate the prediction model.
+* The test and validate sets (which are independent sets from the training set), were used to determine the **out of sample error** and therefore allowed me to choose Random Forest over the Generalized Boosted Regression (gbm) Model because of it's slightly higher accuracy.
+
+
+
+```{r rfOutput, echo=FALSE, message=FALSE}
+
+  # RandomForestFit
+  # plot(RandomForestFit)
+
+  imp <- varImpPlot(RandomForestFit, n.var=20, main='Top 20 Variables of Importance')
+```
+
+
+
+###References
+Velloso, E., Bulling, A., Gellersen, H., Ugulino, W., & Fuks, H. (2013). *Qualitative activity 
+     recognition of weight lifting exercises*. Retrieved April 25, 2015, from 
+     http://groupware.les.inf.puc-rio.br/public/papers/2013.Velloso.QAR-WLE.pdf 
+     
